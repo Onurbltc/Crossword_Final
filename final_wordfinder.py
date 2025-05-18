@@ -152,7 +152,7 @@ with st.sidebar.expander("Advanced Options"):
     use_threading = False
     max_results = st.number_input("Maximum results to display", min_value=10, max_value=10000, value=1000)
     timeout_seconds = st.number_input("Query timeout (seconds)", min_value=5, max_value=2000, value=120)
-    use_substrings = st.checkbox("Allow variable values to be any substring (QAT mode)", value=True, help="If checked, variables can be any substring matching the pattern/length, not just dictionary words. Required for QAT-style queries.")
+    use_substrings = st.checkbox("Allow variable values to be any substring (QAT mode)", value=False, help="If checked, variables can be any substring matching the pattern/length, not just dictionary words. Required for QAT-style queries.")
 
 st.title("Word Pattern Matcher")
 st.write("""
