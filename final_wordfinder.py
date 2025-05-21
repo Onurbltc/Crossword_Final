@@ -2,6 +2,7 @@ import streamlit as st
 import re
 import string
 import time
+import random  # Add this import
 from collections import defaultdict
 import concurrent.futures
 import os
@@ -150,7 +151,8 @@ elif not word_cache.wordlist and 'first_run_done' not in st.session_state:
 with st.sidebar.expander("Advanced Options"):
 
     use_threading = False
-    max_results = st.number_input("Maximum results to display", min_value=10, max_value=10000, value=1000)
+    max_results = st.number_input("Maximum results to display", min_value=10, max_value=100000, value=1000)
+    result_limit = st.number_input("Limit output words", min_value=10, max_value=100000, value=50, help="Stop searching after finding this many matches")
     timeout_seconds = st.number_input("Query timeout (seconds)", min_value=5, max_value=2000, value=120)
     use_substrings = st.checkbox("Allow variable values to be any substring (QAT mode)", value=False, help="If checked, variables can be any substring matching the pattern/length, not just dictionary words. Required for QAT-style queries.")
 
@@ -164,7 +166,7 @@ query_input = st.text_area("Enter your query pattern",
                            height=150)
 
 class PatternMatcher:
-    def __init__(self, wordlist: List[str], words_set: Set[str], word_by_length: Dict[int, List[str]], use_threading: bool = True, timeout: int = 60, use_substrings: bool = True):
+    def __init__(self, wordlist: List[str], words_set: Set[str], word_by_length: Dict[int, List[str]], use_threading: bool = True, timeout: int = 60, use_substrings: bool = True, result_limit: int = 50):
         self.wordlist = wordlist
         self.words_set = words_set
         self.word_by_length = word_by_length
@@ -176,6 +178,7 @@ class PatternMatcher:
         self.use_threading = use_threading
         self.max_workers = min(32, (os.cpu_count() or 1) + 4)
         self.use_substrings = use_substrings
+        self.result_limit = result_limit
 
     def _time_check(self):
         if time.time() - self.start_time > self.timeout:
@@ -186,11 +189,9 @@ class PatternMatcher:
         if pattern in self._regex_cache:
             return self._regex_cache[pattern]
 
-        # Handle special character classes
         pattern = pattern.replace("#", f"[{''.join(CONSONANTS)}]")
         pattern = pattern.replace("@", f"[{''.join(VOWELS)}]")
 
-        # Handle wildcards and special characters
         regex = ""
         i = 0
         while i < len(pattern):
@@ -237,7 +238,6 @@ class PatternMatcher:
             return False
 
     def parse_variable_definition(self, definition: str) -> Optional[VariableDefinition]:
-        # Support both formats: A=(3:pattern) and A=(3-5:pattern)
         match = re.match(r'([A-R])=\((\d+)(?:-(\d+))?:(.*)\)', definition)
         if not match:
             match = re.match(r'([A-R])=\((\d+):(.*)\)', definition)
@@ -321,7 +321,6 @@ class PatternMatcher:
             st.warning("Equation solver requires both variables and patterns.")
             return []
 
-        # Parse all patterns into structures
         pattern_structures = []
         for pattern in patterns:
             structure = self.parse_pattern_structure(pattern, variables)
@@ -330,11 +329,9 @@ class PatternMatcher:
             else:
                 return []
 
-        # Start with the first pattern
         first_structure = pattern_structures[0]
         first_matches = self._find_matches_for_structure(first_structure, variables)
 
-        # For each match of the first pattern, check if it satisfies all other patterns
         for word, decomp in first_matches:
             self._time_check()
             all_patterns_match = True
@@ -349,6 +346,8 @@ class PatternMatcher:
 
             if all_patterns_match:
                 results.append((word, other_words[0] if other_words else None, decomp))
+                if len(results) >= self.result_limit:
+                    break
 
         return results
 
@@ -383,6 +382,8 @@ class PatternMatcher:
 
             if possible and current_pos == len(word):
                 matches.append((word, decomp))
+                if len(matches) >= self.result_limit:
+                    break
 
         return matches
 
@@ -413,14 +414,12 @@ class PatternMatcher:
         search_patterns_raw = []
         variables = {}
 
-        # Parse variable definitions and search patterns
         for part in parts:
             if '=' in part and part[0].isalpha() and part[0].isupper() and part[0] <= 'R':
                 variable_defs_raw.append(part)
             else:
                 search_patterns_raw.append(part)
 
-        # Parse variable definitions
         for v_def_str in variable_defs_raw:
             self._time_check()
             parsed_var = self.parse_variable_definition(v_def_str)
@@ -434,36 +433,28 @@ class PatternMatcher:
 
         try:
             if is_equation_query:
-                # Handle complex equation queries
                 if len(search_patterns_raw) > 1:
-                    # Multiple patterns with variables
                     results = self._handle_composite_pattern(search_patterns_raw, variables)
                     return results, "equation"
                 else:
-                    # Single pattern with variables
                     pattern = search_patterns_raw[0]
                     if any('~' in var for var in re.findall(r'(~?[A-R])', pattern)):
-                        # Pattern contains reversed variables
                         results = self._handle_reverse_pattern(pattern, variables)
                         return results, "equation"
                     else:
-                        # Simple pattern with variables
                         results = self._handle_complex_pattern(pattern, variables)
                         return results, "equation"
 
             elif len(search_patterns_raw) == 1:
                 pattern = search_patterns_raw[0]
                 if pattern.startswith('/'):
-                    # Anagram pattern
                     matches = self.process_anagram_pattern(pattern)
                     return [(m, None, {}) for m in matches], "anagram"
                 else:
-                    # Simple pattern
                     matches = self.find_matches_simple_pattern(pattern)
                     return [(m, None, {}) for m in matches], "simple"
 
             elif len(search_patterns_raw) > 1:
-                # Multiple patterns without variables
                 st.warning("Handling multiple non-equation patterns via intersection.")
                 common_matches = None
 
@@ -561,6 +552,8 @@ class PatternMatcher:
 
             if possible:
                 matches.append(word)
+                if len(matches) >= self.result_limit:
+                    break
 
         return matches
 
@@ -592,6 +585,8 @@ class PatternMatcher:
 
             if compiled_regex.match(word):
                 matches.append(word)
+                if len(matches) >= self.result_limit:
+                    break
 
         return matches
 
@@ -654,6 +649,8 @@ class PatternMatcher:
 
                 if possible and current_pos == len(word):
                     chunk_matches.append((word, decomp))
+                    if len(chunk_matches) >= self.result_limit:
+                        break
 
             return chunk_matches
 
@@ -665,19 +662,19 @@ class PatternMatcher:
                 futures = [executor.submit(process_chunk, chunk) for chunk in chunks]
                 for future in concurrent.futures.as_completed(futures):
                     matches.extend(future.result())
+                    if len(matches) >= self.result_limit:
+                        break
         else:
             matches = process_chunk(candidate_words)
 
         return matches
 
     def _validate_pattern_structure(self, structure: PatternStructure, variables: Dict[str, VariableDefinition]) -> bool:
-        # Check if all variables are defined
         for var_name, _ in structure.variables:
             if var_name not in variables:
                 st.error(f"Variable '{var_name}' used in pattern '{structure.original}' but not defined.")
                 return False
 
-        # Check if all variables have fixed lengths
         for var_name, _ in structure.variables:
             var_info = variables[var_name]
             if not var_info.is_fixed_length:
@@ -687,17 +684,12 @@ class PatternMatcher:
         return True
 
     def _optimize_pattern_order(self, patterns: List[str], variables: Dict[str, VariableDefinition]) -> List[str]:
-        # Sort patterns by complexity and length to optimize matching
         pattern_structures = []
         for pattern in patterns:
             structure = self.parse_pattern_structure(pattern, variables)
             if structure:
                 pattern_structures.append((pattern, structure))
 
-        # Sort by:
-        # 1. Number of variables (fewer first)
-        # 2. Total length (shorter first)
-        # 3. Number of literals (more first)
         pattern_structures.sort(key=lambda x: (
             len(x[1].variables),
             x[1].total_length,
@@ -724,17 +716,14 @@ class PatternMatcher:
         if not structure:
             return []
 
-        # Get all possible lengths for each variable
         var_lengths = {}
         for var_name, _ in structure.variables:
             var_info = variables[var_name]
             var_lengths[var_name] = (var_info.min_len, var_info.max_len)
 
-        # Calculate total length range
         min_total_len = sum(min_len for min_len, _ in var_lengths.values()) + len(structure.literals)
         max_total_len = sum(max_len for _, max_len in var_lengths.values()) + len(structure.literals)
 
-        # Get all words within the length range
         candidates = []
         for length in range(min_total_len, max_total_len + 1):
             candidates.extend(self.word_by_length.get(length, []))
@@ -763,19 +752,16 @@ class PatternMatcher:
 
     def _validate_variable_constraints(self, variables: Dict[str, VariableDefinition]) -> bool:
         """Validate that all variable constraints are consistent."""
-        # Check for overlapping variable names
         var_names = set(variables.keys())
         if len(var_names) != len(variables):
             st.error("Duplicate variable names found.")
             return False
 
-        # Check for valid variable names (A-R)
         for name in var_names:
             if not (len(name) == 1 and 'A' <= name <= 'R'):
                 st.error(f"Invalid variable name: {name}. Must be a single letter A-R.")
                 return False
-
-        # Check for valid patterns
+            
         for var_info in variables.values():
             try:
                 self.pattern_to_regex(var_info.pattern)
@@ -791,12 +777,10 @@ class PatternMatcher:
         if not structure:
             return []
 
-        # Precompute matches for each variable
         var_matches = self._precompute_pattern_matches(pattern, variables)
         if not var_matches:
             return []
 
-        # Get optimized candidate words
         candidates = self._optimize_word_candidates(pattern, variables)
         if not candidates:
             return []
@@ -814,7 +798,6 @@ class PatternMatcher:
                 part = word[current_pos : current_pos + var_len]
                 part_to_check = part[::-1] if is_reversed else part
 
-                # Early filtering using precomputed matches
                 if part_to_check not in var_matches[var_name]:
                     possible = False
                     break
@@ -830,6 +813,8 @@ class PatternMatcher:
 
             if possible and current_pos == len(word):
                 matches.append((word, decomp))
+                if len(matches) >= self.result_limit:
+                    break
 
         return matches
 
@@ -859,6 +844,8 @@ class PatternMatcher:
 
             if reversed_word in self.words_set:
                 results.append((word, reversed_word, decomp))
+                if len(results) >= self.result_limit:
+                    break
 
         return results
 
@@ -883,65 +870,80 @@ class PatternMatcher:
             return list(set(results))
 
     def _handle_composite_pattern(self, patterns: List[str], variables: Dict[str, VariableDefinition]) -> List[Tuple[str, Optional[str], Dict[str, str]]]:
-        """QAT-style: If substring mode is enabled, always use full product. Otherwise, use optimized driver pattern."""
+        """Process patterns with optimized substring matching and early validation."""
         if not self._validate_variable_constraints(variables):
             return []
 
         if self.use_substrings:
-            # QAT-style: try all possible substrings for each variable
             var_names = sorted(variables.keys())
-            var_domains = [self._all_possible_variable_values(variables[name]) for name in var_names]
-            if not all(var_domains):
-                return []
             pattern_structures = [self.parse_pattern_structure(p, variables) for p in patterns]
             if not all(pattern_structures):
                 return []
+
             results = []
-            for values in itertools.product(*var_domains):
+            processed = set()
+
+            sample_size = 100  
+            max_attempts = 50  
+            attempt = 0
+
+            var_lengths = {name: variables[name].min_len for name in var_names}
+
+            while len(results) < self.result_limit and attempt < max_attempts:
                 self._time_check()
-                decomp = dict(zip(var_names, values))
-                all_words = []
-                for structure in pattern_structures:
-                    word = ""
-                    for var_name, is_reversed in structure.variables:
-                        val = decomp[var_name]
-                        word += val[::-1] if is_reversed else val
-                    for literal in structure.literals:
-                        word += literal
-                    if word not in self.words_set:
-                        break
-                    all_words.append(word)
-                else:
-                    results.append((all_words[0], all_words[1] if len(all_words) > 1 else None, decomp))
-                    if len(results) > 10000:
-                        break
-            return results
-        else:
-            # Find the pattern with the most literals/longest length
-            pattern_structures = [self.parse_pattern_structure(p, variables) for p in patterns]
-            if not all(pattern_structures):
-                return []
-            driver_idx = max(range(len(pattern_structures)), key=lambda i: (len(pattern_structures[i].literals), pattern_structures[i].total_length))
-            driver_pattern = patterns[driver_idx]
-            driver_structure = pattern_structures[driver_idx]
-            other_patterns = [p for i,p in enumerate(patterns) if i != driver_idx]
-            other_structures = [s for i,s in enumerate(pattern_structures) if i != driver_idx]
-            matches = self._optimize_pattern_matching(driver_pattern, variables)
-            results = []
-            for word, decomp in matches:
-                self._time_check()
-                all_ok = True
-                for structure in other_structures:
-                    candidate = self._construct_word_from_structure(structure, decomp)
-                    if not candidate or candidate not in self.words_set:
-                        all_ok = False
-                        break
-                if all_ok:
-                    results.append((word, None, decomp))
-                    if len(results) > 10000:
-                        break
+                
+          
+                candidate_words = random.sample(self.wordlist, min(1000, len(self.wordlist)))
+                
+                var_values = {name: set() for name in var_names}
+                for word in candidate_words:
+                    for name, length in var_lengths.items():
+                        if len(word) >= length:
+                            for i in range(len(word) - length + 1):
+                                substr = word[i:i+length]
+                                if variables[name].pattern == "*" or self.matches_pattern(substr, variables[name].pattern):
+                                    var_values[name].add(substr)
+
+                combinations = []
+                for _ in range(sample_size):
+                    combo = {}
+                    valid = True
+                    for name in var_names:
+                        if var_values[name]:
+                            combo[name] = random.choice(list(var_values[name]))
+                        else:
+                            valid = False
+                            break
+                    if valid:
+                        combo_key = tuple(sorted(combo.items()))
+                        if combo_key not in processed:
+                            combinations.append(combo)
+                            processed.add(combo_key)
+
+                for decomp in combinations:
+                    valid_match = False
+                    for pattern in patterns:
+                        word = ""
+                        structure = self.parse_pattern_structure(pattern, variables)
+                        for var_name, is_reversed in structure.variables:
+                            val = decomp[var_name]
+                            word += val[::-1] if is_reversed else val
+                        for literal in structure.literals:
+                            word += literal
+                        if word in self.words_set:
+                            valid_match = True
+                            results.append((word, None, decomp))
+                            break
+
+                    if valid_match and len(results) >= self.result_limit:
+                        return results
+
+                attempt += 1
+
             return results
 
+        else:
+            return []
 
 def format_results(results: Optional[List[Tuple[str, Optional[str], Dict[str, str]]]], result_type: str, max_disp: int) -> str:
     if results is None:
@@ -995,7 +997,8 @@ if st.button("Execute Search", key="execute_button"):
                  word_cache.words_set,
                  word_cache.word_by_length,
                  timeout=timeout_seconds,
-                 use_substrings=use_substrings
+                 use_substrings=use_substrings,
+                 result_limit=result_limit
              )
              results_data, result_type = matcher.execute_query(query)
              end_exec_time = time.time()
